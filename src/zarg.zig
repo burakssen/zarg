@@ -154,9 +154,23 @@ pub fn Zarg(comptime EnumType: type) type {
         }
 
         pub fn printHelp(self: *Self) void {
+            const indent = "  ";
+
             if (self.active_sub_name) |name| {
-                std.log.info("Available arguments: {s}", .{name});
+                std.log.info("Subcommand: {s}", .{name});
+                std.log.info("Available arguments:", .{});
+            } else {
+                std.log.info("Available arguments:", .{});
+                if (self.subcommands.count() > 0) {
+                    std.log.info("Available subcommands:", .{});
+                    var it = self.subcommands.iterator();
+                    while (it.next()) |entry| {
+                        std.log.info("{s}", .{entry.key});
+                    }
+                    std.log.info("", .{}); // Blank line for spacing
+                }
             }
+
             for (self.arguments.items) |arg_info| {
                 const type_str = switch (arg_info.name.argType()) {
                     .Int => "integer",
@@ -164,7 +178,7 @@ pub fn Zarg(comptime EnumType: type) type {
                     .String => "string",
                     .Bool => "boolean flag",
                 };
-                std.log.info("  --{s} ({s})", .{ @tagName(arg_info.name), type_str });
+                std.log.info("{s}--{s} ({s})", .{ indent, @tagName(arg_info.name), type_str });
             }
         }
 
