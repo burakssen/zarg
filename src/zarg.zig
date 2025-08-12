@@ -107,7 +107,20 @@ pub fn Zarg(comptime EnumType: type) type {
         // Accepts a handler holder type with a static function: `pub fn handler(*T) !void`.
         pub fn on(self: *Self, comptime name: []const u8, comptime T: type, comptime Handler: type) !bool {
             if (!self.activeIs(name)) return false;
-            try self.withSub(name, T, Handler.handler);
+            const FnT = @TypeOf(Handler.handler);
+            const finfo = @typeInfo(FnT).@"fn";
+            if (finfo.params.len == 2) {
+                // Expecting: fn(*T, std.mem.Allocator) !void
+                try self.withSub(name, T, Handler.handler);
+            } else if (finfo.params.len == 1) {
+                // Expecting: fn(*T) !void
+                if (self.subcommands.get(name)) |sc| {
+                    const sp = @as(*T, @ptrCast(@alignCast(sc.ptr)));
+                    try Handler.handler(sp);
+                } else return error.UnknownSubcommand;
+            } else {
+                return error.InvalidHandler;
+            }
             return true;
         }
 
@@ -165,7 +178,7 @@ pub fn Zarg(comptime EnumType: type) type {
                     std.log.info("Available subcommands:", .{});
                     var it = self.subcommands.iterator();
                     while (it.next()) |entry| {
-                        std.log.info("{s}", .{entry.key});
+                        std.log.info("{s}", .{entry.key_ptr.*});
                     }
                     std.log.info("", .{}); // Blank line for spacing
                 }
