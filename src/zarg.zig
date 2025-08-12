@@ -87,10 +87,10 @@ pub fn Zarg(comptime EnumType: type) type {
             return false;
         }
 
-        pub fn withSub(self: *Self, comptime name: []const u8, comptime T: type, handler: *const fn (*T) anyerror!void) !void {
+        pub fn withSub(self: *Self, comptime name: []const u8, comptime T: type, handler: *const fn (*T, std.mem.Allocator) anyerror!void) !void {
             if (self.subcommands.get(name)) |sc| {
                 const sp = @as(*T, @ptrCast(@alignCast(sc.ptr)));
-                try handler(sp);
+                try handler(sp, self.allocator);
             } else return error.UnknownSubcommand;
         }
 
@@ -310,7 +310,7 @@ test "parse subcommands" {
     try z.parse(argv.items);
 
     try std.testing.expect(try z.on("encode", Zarg(EncodeArgs), struct {
-        fn handler(p: *Zarg(EncodeArgs)) !void {
+        fn handler(p: *Zarg(EncodeArgs), _: std.mem.Allocator) !void {
             try std.testing.expectEqual(@as(?i32, 12), p.getValue(.age));
             try std.testing.expectEqualStrings("burak", p.getValue(.name).?);
         }
