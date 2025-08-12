@@ -167,31 +167,46 @@ pub fn Zarg(comptime EnumType: type) type {
         }
 
         pub fn printHelp(self: *Self) void {
+            const out = std.io.getStdOut().writer();
             const indent = "  ";
 
+            // Header and usage
             if (self.active_sub_name) |name| {
-                std.log.info("Subcommand: {s}", .{name});
-                std.log.info("Available arguments:", .{});
+                _ = out.print("Usage:\n{s}<cmd> {s} [options]\n\n", .{ indent, name }) catch {};
             } else {
-                std.log.info("Available arguments:", .{});
-                if (self.subcommands.count() > 0) {
-                    std.log.info("Available subcommands:", .{});
-                    var it = self.subcommands.iterator();
-                    while (it.next()) |entry| {
-                        std.log.info("{s}", .{entry.key_ptr.*});
-                    }
-                    std.log.info("", .{}); // Blank line for spacing
-                }
+                _ = out.print("Usage:\n{s}<cmd> [subcommand] [options]\n\n", .{ indent }) catch {};
             }
 
+            // Subcommands (if any and if not inside a specific subcommand)
+            if (self.active_sub_name == null and self.subcommands.count() > 0) {
+                _ = out.print("Subcommands:\n", .{}) catch {};
+                var it = self.subcommands.iterator();
+                while (it.next()) |entry| {
+                    _ = out.print("{s}- {s}\n", .{ indent, entry.key_ptr.* }) catch {};
+                }
+                _ = out.print("\n", .{}) catch {};
+            }
+
+            // Options/arguments: align nicely
+            var max_name_len: usize = 0;
             for (self.arguments.items) |arg_info| {
-                const type_str = switch (arg_info.name.argType()) {
-                    .Int => "integer",
-                    .Float => "float",
-                    .String => "string",
-                    .Bool => "boolean flag",
-                };
-                std.log.info("{s}--{s} ({s})", .{ indent, @tagName(arg_info.name), type_str });
+                const n = @tagName(arg_info.name).len;
+                if (n > max_name_len) max_name_len = n;
+            }
+
+            if (self.arguments.items.len > 0) {
+                _ = out.print("Options:\n", .{}) catch {};
+                for (self.arguments.items) |arg_info| {
+                    const type_str = switch (arg_info.name.argType()) {
+                        .Int => "integer",
+                        .Float => "float",
+                        .String => "string",
+                        .Bool => "boolean",
+                    };
+                    const name_str = @tagName(arg_info.name);
+                    const pad = max_name_len - name_str.len;
+                    _ = out.print("{s}--{s}{s}  ({s})\n", .{ indent, name_str, std.mem.repeat(u8, ' ', pad), type_str }) catch {};
+                }
             }
         }
 
