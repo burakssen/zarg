@@ -249,19 +249,8 @@ pub fn Zarg(comptime EnumType: type) type {
 
         pub fn printHelp(self: *Self) void {
             const out = std.io.getStdOut().writer();
+            // Mirror writer-based help exactly to avoid duplication
             self.printHelpTo(out);
-            if (self.active_sub_name) |name| {
-                if (self.subcommands.get(name)) |sc| {
-                    sc.print_options(sc.ptr);
-                }
-            } else if (self.subcommands.count() > 0) {
-                // Print options for all subcommands in a simple format
-                var it = self.subcommands.iterator();
-                while (it.next()) |entry| {
-                    _ = out.print("\n{s}{s} options:\n", .{ "  ", entry.key_ptr.* }) catch {};
-                    if (self.subcommands.get(entry.key_ptr.*)) |sc| sc.print_options(sc.ptr);
-                }
-            }
         }
 
         fn findArg(self: *Self, name: EnumType) ?*const ArgInfo {
