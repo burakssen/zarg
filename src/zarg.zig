@@ -174,7 +174,7 @@ pub fn Zarg(comptime EnumType: type) type {
             if (self.active_sub_name) |name| {
                 _ = out.print("Usage:\n{s}<cmd> {s} [options]\n\n", .{ indent, name }) catch {};
             } else {
-                _ = out.print("Usage:\n{s}<cmd> [subcommand] [options]\n\n", .{ indent }) catch {};
+                _ = out.print("Usage:\n{s}<cmd> [subcommand] [options]\n\n", .{indent}) catch {};
             }
 
             // Subcommands (if any and if not inside a specific subcommand)
@@ -205,7 +205,13 @@ pub fn Zarg(comptime EnumType: type) type {
                     };
                     const name_str = @tagName(arg_info.name);
                     const pad = max_name_len - name_str.len;
-                    _ = out.print("{s}--{s}{s}  ({s})\n", .{ indent, name_str, std.mem.repeat(u8, ' ', pad), type_str }) catch {};
+                    var whitespaces = std.ArrayList(u8).init(self.allocator);
+                    defer whitespaces.deinit();
+                    for (0..pad) |_| {
+                        whitespaces.append(' ') catch {};
+                    }
+
+                    _ = out.print("{s}--{s}{s}  ({s})\n", .{ indent, name_str, whitespaces.items, type_str }) catch {};
                 }
             }
         }
@@ -366,4 +372,39 @@ test "parse subcommands" {
             try std.testing.expectEqual(@as(?i32, 2023), p.getValue(.year));
         }
     })));
+}
+
+test "help" {
+    const MainArgs = enum {
+        help,
+        pub fn argType(self: @This()) ArgumentType {
+            return switch (self) {
+                .help => .Bool,
+            };
+        }
+    };
+
+    const allocator = std.testing.allocator;
+
+    var z = try Zarg(MainArgs).init(allocator);
+    defer z.deinit();
+
+    var argv = std.ArrayList([:0]u8).init(allocator);
+    defer argv.deinit();
+
+    const mk = struct {
+        fn c(s: []const u8) ![:0]u8 {
+            return try std.mem.concatWithSentinel(allocator, u8, &.{s}, 0);
+        }
+    };
+    defer {
+        for (argv.items) |s| allocator.free(s);
+    }
+
+    try argv.append(try mk.c("program"));
+    try argv.append(try mk.c("help"));
+
+    try z.parse(argv.items);
+
+    z.printHelp();
 }
