@@ -1,5 +1,11 @@
 const std = @import("std");
 
+// Vtable entry for subcommands (opaque pointer + parse thunk)
+const Subcommand = struct {
+    ptr: *anyopaque,
+    parse: *const fn (*anyopaque, [][:0]u8) anyerror!void,
+};
+
 pub const ArgumentType = enum(u8) {
     Int,
     Float,
@@ -23,11 +29,15 @@ pub fn Zarg(comptime EnumType: type) type {
 
         allocator: std.mem.Allocator,
         arguments: std.ArrayList(ArgInfo),
+        subcommands: std.StringHashMap(Subcommand),
+        active_subcommand: ?*anyopaque = null,
+        active_sub_name: ?[]const u8 = null,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
             var self = Self{
                 .allocator = allocator,
                 .arguments = std.ArrayList(ArgInfo).init(allocator),
+                .subcommands = std.StringHashMap(Subcommand).init(allocator),
             };
 
             inline for (@typeInfo(EnumType).@"enum".fields) |field| {
@@ -39,10 +49,85 @@ pub fn Zarg(comptime EnumType: type) type {
 
         pub fn deinit(self: *Self) void {
             self.arguments.deinit();
+
+            // Subcommand instances are owned by the caller/tests; nothing to deinit here.
+            var it = self.subcommands.iterator();
+            while (it.next()) |_| {}
+            self.subcommands.deinit();
+        }
+
+        // Register a subcommand parser of arbitrary type `T` that exposes `parse`.
+        fn _addSubcommand(self: *Self, comptime T: type, name: []const u8, parser: *T) !void {
+            const Thunk = struct {
+                fn call(p: *anyopaque, a: [][:0]u8) !void {
+                    const sp = @as(*T, @ptrCast(@alignCast(p)));
+                    try T.parse(sp, a);
+                }
+            };
+            try self.subcommands.put(name, .{ .ptr = parser, .parse = Thunk.call });
+        }
+
+        // Convenience: infer type from the parser pointer argument
+        pub fn addSubcommand(self: *Self, name: []const u8, parser: anytype) !void {
+            const T = @TypeOf(parser.*);
+            try self._addSubcommand(T, name, parser);
+        }
+
+        pub fn activeSubcommandName(self: *Self) ?[]const u8 {
+            return self.active_sub_name;
+        }
+
+        pub fn getSubcommandPtr(self: *Self, name: []const u8) ?*anyopaque {
+            if (self.subcommands.get(name)) |sc| return sc.ptr;
+            return null;
+        }
+
+        pub fn activeIs(self: *Self, name: []const u8) bool {
+            if (self.active_sub_name) |n| return std.mem.eql(u8, n, name);
+            return false;
+        }
+
+        pub fn withSub(self: *Self, comptime name: []const u8, comptime T: type, handler: *const fn (*T) anyerror!void) !void {
+            if (self.subcommands.get(name)) |sc| {
+                const sp = @as(*T, @ptrCast(@alignCast(sc.ptr)));
+                try handler(sp);
+            } else return error.UnknownSubcommand;
+        }
+
+        // Return the typed subparser if it's the active one; otherwise null
+        pub fn sub(self: *Self, comptime name: []const u8, comptime T: type) ?*T {
+            if (!self.activeIs(name)) return null;
+            if (self.subcommands.get(name)) |sc| {
+                return @as(*T, @ptrCast(@alignCast(sc.ptr)));
+            }
+            return null;
+        }
+
+        // Conditionally run a handler for a typed subcommand; returns whether it handled.
+        // Accepts a handler holder type with a static function: `pub fn handler(*T) !void`.
+        pub fn on(self: *Self, comptime name: []const u8, comptime T: type, comptime Handler: type) !bool {
+            if (!self.activeIs(name)) return false;
+            try self.withSub(name, T, Handler.handler);
+            return true;
         }
 
         pub fn parse(self: *Self, args: [][:0]u8) !void {
-            var i: usize = 1; // Skip program name
+            var i: usize = 0; // Start from 0; skip non-flags dynamically
+
+            // Check for subcommands first (only when the second arg is a non-flag token)
+            if (args.len > 1) {
+                const maybe_sub = args[1];
+                if (!std.mem.startsWith(u8, maybe_sub, "--")) {
+                    if (self.subcommands.get(maybe_sub)) |sc| {
+                        self.active_subcommand = sc.ptr;
+                        self.active_sub_name = maybe_sub;
+                        try sc.parse(sc.ptr, args[2..]); // Delegate remaining args to sub-parser
+                        return;
+                    }
+                }
+            }
+
+            // If no subcommand is found, parse arguments (skip any non-flag tokens)
             while (i < args.len) : (i += 1) {
                 const arg = args[i];
                 if (!std.mem.startsWith(u8, arg, "--")) continue;
@@ -131,15 +216,13 @@ test "parse flags and values" {
     var argv = std.ArrayList([:0]u8).init(allocator);
     defer argv.deinit();
 
-    // helper to make sentinel-terminated strings
     const mk = struct {
         fn c(s: []const u8) ![:0]u8 {
-            return try std.mem.concatWithSentinel(allocator, u8, &.{ s }, 0);
+            return try std.mem.concatWithSentinel(allocator, u8, &.{s}, 0);
         }
     };
 
     defer {
-        // free all created strings
         for (argv.items) |s| allocator.free(s);
     }
 
@@ -158,4 +241,85 @@ test "parse flags and values" {
     try std.testing.expectEqual(@as(?f32, 3.8), z.getValue(.gpa));
     try std.testing.expectEqualStrings("Alice", z.getValue(.name).?);
     try std.testing.expectEqual(true, z.getValue(.is_student));
+}
+
+test "parse subcommands" {
+    const allocator = std.testing.allocator;
+
+    const MainArgs = enum {
+        help,
+        pub fn argType(self: @This()) ArgumentType {
+            return switch (self) {
+                .help => .Bool,
+            };
+        }
+    };
+
+    const EncodeArgs = enum {
+        age,
+        name,
+        pub fn argType(self: @This()) ArgumentType {
+            return switch (self) {
+                .age => .Int,
+                .name => .String,
+            };
+        }
+    };
+
+    const DecodeArgs = enum {
+        school,
+        year,
+        pub fn argType(self: @This()) ArgumentType {
+            return switch (self) {
+                .school => .String,
+                .year => .Int,
+            };
+        }
+    };
+
+    var z = try Zarg(MainArgs).init(allocator);
+    defer z.deinit();
+
+    var encode_parser = try Zarg(EncodeArgs).init(allocator);
+    defer encode_parser.deinit();
+    var decode_parser = try Zarg(DecodeArgs).init(allocator);
+    defer decode_parser.deinit();
+
+    try z.addSubcommand("encode", &encode_parser);
+    try z.addSubcommand("decode", &decode_parser);
+
+    var argv = std.ArrayList([:0]u8).init(allocator);
+    defer argv.deinit();
+
+    const mk = struct {
+        fn c(s: []const u8) ![:0]u8 {
+            return try std.mem.concatWithSentinel(allocator, u8, &.{s}, 0);
+        }
+    };
+    defer {
+        for (argv.items) |s| allocator.free(s);
+    }
+
+    try argv.append(try mk.c("program"));
+    try argv.append(try mk.c("encode"));
+    try argv.append(try mk.c("--age"));
+    try argv.append(try mk.c("12"));
+    try argv.append(try mk.c("--name"));
+    try argv.append(try mk.c("burak"));
+
+    try z.parse(argv.items);
+
+    try std.testing.expect(try z.on("encode", Zarg(EncodeArgs), struct {
+        fn handler(p: *Zarg(EncodeArgs)) !void {
+            try std.testing.expectEqual(@as(?i32, 12), p.getValue(.age));
+            try std.testing.expectEqualStrings("burak", p.getValue(.name).?);
+        }
+    }));
+
+    try std.testing.expect(!(try z.on("decode", Zarg(DecodeArgs), struct {
+        fn handler(p: *Zarg(DecodeArgs)) !void {
+            try std.testing.expectEqualStrings("MIT", p.getValue(.school).?);
+            try std.testing.expectEqual(@as(?i32, 2023), p.getValue(.year));
+        }
+    })));
 }
