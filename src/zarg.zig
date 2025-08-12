@@ -154,7 +154,9 @@ pub fn Zarg(comptime EnumType: type) type {
         }
 
         pub fn printHelp(self: *Self) void {
-            std.log.info("Available arguments:", .{});
+            if (self.active_sub_name) |name| {
+                std.log.info("Available arguments: {s}", .{name});
+            }
             for (self.arguments.items) |arg_info| {
                 const type_str = switch (arg_info.name.argType()) {
                     .Int => "integer",
